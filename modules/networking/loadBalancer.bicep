@@ -22,7 +22,7 @@ param subnetName string
 @description('Frontend IP configurations')
 param frontends array
 
-@description('Backend address pools')
+@description('Backend address pool configurations')
 param backendPools array
 
 @description('Health probes')
@@ -32,12 +32,28 @@ param probes array
 param loadBalancingRules array
 
 
-var subnetId = resourceId(
-  'Microsoft.Network/virtualNetworks/subnets',
-  vnetName,
-  subnetName
-)
+// ======================================================
+// Existing VNet
+// ======================================================
 
+resource virtualNetwork 'Microsoft.Network/virtualNetworks@2025-05-01' existing = {
+  name: vnetName
+}
+
+
+// ======================================================
+// Existing subnet
+// ======================================================
+
+resource subnet 'Microsoft.Network/virtualNetworks/subnets@2025-05-05' existing = {
+  parent: virtualNetwork
+  name: subnetName
+}
+
+
+// ======================================================
+// Internal Load Balancer
+// ======================================================
 
 resource loadBalancer 'Microsoft.Network/loadBalancers@2025-05-01' = {
   name: loadBalancerName
@@ -51,9 +67,9 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-05-01' = {
 
   properties: {
 
-    // --------------------------------------------------
+    // ==================================================
     // Frontend IP configurations
-    // --------------------------------------------------
+    // ==================================================
 
     frontendIPConfigurations: [
       for frontend in frontends: {
@@ -64,31 +80,16 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-05-01' = {
           privateIPAllocationMethod: 'Static'
 
           subnet: {
-            id: subnetId
+            id: subnet.id
           }
         }
       }
     ]
 
 
-    // --------------------------------------------------
-    // Backend address pools
-    // --------------------------------------------------
-
-    backendAddressPools: [
-      for backendPool in backendPools: {
-        name: backendPool.name
-
-        properties: {
-          loadBalancerBackendAddresses: backendPool.addresses
-        }
-      }
-    ]
-
-
-    // --------------------------------------------------
+    // ==================================================
     // Health probes
-    // --------------------------------------------------
+    // ==================================================
 
     probes: [
       for probe in probes: {
@@ -104,15 +105,16 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-05-01' = {
     ]
 
 
-    // --------------------------------------------------
+    // ==================================================
     // Load balancing rules
-    // --------------------------------------------------
+    // ==================================================
 
     loadBalancingRules: [
       for rule in loadBalancingRules: {
         name: rule.name
 
         properties: {
+
           frontendIPConfiguration: {
             id: resourceId(
               'Microsoft.Network/loadBalancers/frontendIPConfigurations',
@@ -138,16 +140,61 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-05-01' = {
           }
 
           protocol: rule.protocol
+
           frontendPort: rule.frontendPort
+
           backendPort: rule.backendPort
+
           idleTimeoutInMinutes: rule.idleTimeoutInMinutes
+
           enableFloatingIP: rule.enableFloatingIp
+
           enableTcpReset: rule.enableTcpReset
         }
       }
     ]
   }
 }
+
+
+// ======================================================
+// Backend Address Pools
+//
+// IMPORTANT:
+// These are child resources of the Load Balancer.
+//
+// Each backend member is configured using:
+//   IP address
+//   + subnet reference
+//
+// Therefore this is IP-based backend configuration,
+// not NIC-based backend configuration.
+// ======================================================
+
+resource backendAddressPool 'Microsoft.Network/loadBalancers/backendAddressPools@2025-05-01' = [
+  for backendPool in backendPools: {
+    parent: loadBalancer
+
+    name: backendPool.name
+
+    properties: {
+
+      loadBalancerBackendAddresses: [
+        for backend in backendPool.addresses: {
+          name: backend.name
+
+          properties: {
+            ipAddress: backend.ipAddress
+
+            subnet: {
+              id: subnet.id
+            }
+          }
+        }
+      ]
+    }
+  }
+]
 
 
 output loadBalancerId string = loadBalancer.id
